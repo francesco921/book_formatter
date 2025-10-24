@@ -1,4 +1,7 @@
 # book_formatter.py
+# UI Streamlit integrata + CLI
+# DOCX con python-docx, PDF nativo con ReportLab (nessun LibreOffice/Word necessario)
+
 import argparse
 import datetime
 import os
@@ -8,41 +11,56 @@ import subprocess
 import sys
 from typing import List, Tuple, Optional
 
+# ----------------------------
 # DOCX
+# ----------------------------
 from docx import Document
-from docx.shared import Pt, Inches, Cm  # Cm necessario
+from docx.shared import Pt, Inches, Cm  # Cm richiesto
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-# PDF input opzionale
+# ----------------------------
+# PDF (input parsing opzionale)
+# ----------------------------
 try:
     from pdfminer.high_level import extract_text as pdf_extract_text
 except Exception:
     pdf_extract_text = None
 
-# Tipi
+# ----------------------------
+# PDF (output nativo)
+# ----------------------------
+from reportlab.lib.pagesizes import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, TableOfContents
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.pdfbase.pdfmetrics import stringWidth
+
+
 HeadingItem = Tuple[int, str]  # (level, text)
 
-# -------------------------------
-# Parsing sorgente DOCX e PDF
-# -------------------------------
+
+# =========================
+# Parsing sorgente DOCX/PDF
+# =========================
 def parse_docx_input(path: str) -> Tuple[List[HeadingItem], List[Tuple[int, List[str]]]]:
     doc = Document(path)
     headings: List[HeadingItem] = []
     content_blocks: List[Tuple[int, List[str]]] = []
+
     current_level: Optional[int] = None
     current_buffer: List[str] = []
 
     def flush():
-        nonlocal current_level, current_buffer, content_blocks
+        nonlocal current_level, current_buffer
         if current_level is not None:
             content_blocks.append((current_level, current_buffer))
         current_level = None
         current_buffer = []
 
-    h1_pattern = re.compile(r"^\s*(\d+)\.\s+.+")       # 1. Titolo
-    h2_pattern = re.compile(r"^\s*(\d+)\.(\d+)\s+.+")  # 1.1 Sottotitolo
+    h1_pattern = re.compile(r"^\s*\d+\.\s+.+")          # 1. Titolo
+    h2_pattern = re.compile(r"^\s*\d+\.\d+\s+.+")       # 1.1 Sottotitolo
 
     for p in doc.paragraphs:
         text = (p.text or "").strip()
@@ -79,12 +97,11 @@ def parse_docx_input(path: str) -> Tuple[List[HeadingItem], List[Tuple[int, List
 def parse_pdf_input(path: str) -> Tuple[List[HeadingItem], List[Tuple[int, List[str]]]]:
     if pdf_extract_text is None:
         raise RuntimeError("pdfminer.six non installato. Esegui: pip install pdfminer.six")
-
     raw = pdf_extract_text(path)
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
 
-    h1_pattern = re.compile(r"^\s*(\d+)\.\s+(.+)")
-    h2_pattern = re.compile(r"^\s*(\d+)\.(\d+)\s+(.+)")
+    h1_pattern = re.compile(r"^\s*\d+\.\s+.+")
+    h2_pattern = re.compile(r"^\s*\d+\.\d+\s+.+")
 
     headings: List[HeadingItem] = []
     content_blocks: List[Tuple[int, List[str]]] = []
@@ -92,7 +109,7 @@ def parse_pdf_input(path: str) -> Tuple[List[HeadingItem], List[Tuple[int, List[
     current_buffer: List[str] = []
 
     def flush():
-        nonlocal current_level, current_buffer, content_blocks
+        nonlocal current_level, current_buffer
         if current_level is not None:
             content_blocks.append((current_level, current_buffer))
         current_level = None
@@ -116,17 +133,14 @@ def parse_pdf_input(path: str) -> Tuple[List[HeadingItem], List[Tuple[int, List[
     flush()
     return headings, content_blocks
 
-# -------------------------------
+
+# =========================
 # Costruzione DOCX
-# -------------------------------
+# =========================
 def set_page_size_and_margins(doc: Document, page: str):
     if page not in ("6x9", "8.5x11"):
         raise ValueError("Formato pagina non valido. Usa '6x9' o '8.5x11'.")
-
-    if page == "6x9":
-        width_in, height_in = 6.0, 9.0
-    else:
-        width_in, height_in = 8.5, 11.0
+    width_in, height_in = (6.0, 9.0) if page == "6x9" else (8.5, 11.0)
 
     section = doc.sections[0]
     section.page_width = Inches(width_in)
@@ -176,7 +190,7 @@ def add_copyright_page(doc: Document, author: str):
     doc.add_page_break()
 
 
-def add_toc(doc: Document, levels: str = "1-2"):
+def add_toc_field(doc: Document, levels: str = "1-2"):
     p = doc.add_paragraph()
     r = p.add_run()
     fld = OxmlElement("w:fldSimple")
@@ -198,7 +212,6 @@ def add_footer_page_numbers(doc: Document):
 
 def add_heading(doc: Document, text: str, level: int):
     p = doc.add_paragraph()
-    # tenta lo stile di Word se esiste, altrimenti fallback
     try:
         p.style = doc.styles[f"Heading {level}"]
         p.add_run(text.strip())
@@ -218,7 +231,7 @@ def add_paragraph(doc: Document, text: str):
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
 
-def build_document(
+def build_docx(
     title: str,
     subtitle: str,
     author: str,
@@ -232,7 +245,7 @@ def build_document(
 
     add_title_page(doc, title, subtitle, author)
     add_copyright_page(doc, author)
-    add_toc(doc, "1-2")
+    add_toc_field(doc, "1-2")
 
     idx_block = 0
     for level, heading_text in headings:
@@ -247,41 +260,141 @@ def build_document(
             doc.add_page_break()
     return doc
 
-# -------------------------------
-# Export PDF
-# -------------------------------
-def export_pdf(docx_path: str, pdf_path: str) -> bool:
-    # LibreOffice
-    soffice = shutil.which("soffice") or shutil.which("soffice.bin")
-    if soffice:
-        try:
-            outdir = os.path.dirname(os.path.abspath(pdf_path)) or "."
-            subprocess.check_call([soffice, "--headless", "--convert-to", "pdf", "--outdir", outdir, docx_path])
-            base = os.path.splitext(os.path.basename(docx_path))[0]
-            created = os.path.join(outdir, base + ".pdf")
-            if created != pdf_path:
-                if os.path.exists(pdf_path):
-                    os.remove(pdf_path)
-                os.replace(created, pdf_path)
-            return True
-        except Exception:
-            pass
-    # docx2pdf su Windows
-    try:
-        import platform
-        if platform.system().lower().startswith("win"):
-            from docx2pdf import convert
-            convert(docx_path, pdf_path)
-            return True
-    except Exception:
-        pass
-    return False
 
-# -------------------------------
+# =========================
+# Costruzione PDF nativo (ReportLab)
+# =========================
+def _pagesize_for(page_format: str):
+    if page_format == "6x9":
+        return (6.0 * inch, 9.0 * inch)
+    elif page_format == "8.5x11":
+        return (8.5 * inch, 11.0 * inch)
+    raise ValueError("Formato pagina non valido")
+
+def build_pdf(
+    out_pdf_path: str,
+    title: str,
+    subtitle: str,
+    author: str,
+    page_format: str,
+    headings: List[HeadingItem],
+    content_blocks: List[Tuple[int, List[str]]],
+):
+    pagesize = _pagesize_for(page_format)
+    left_margin = right_margin = top_margin = bottom_margin = 2 * cm
+
+    # Stili
+    styles = getSampleStyleSheet()
+    Title = ParagraphStyle(
+        "Title", parent=styles["Title"], alignment=1, fontName="Helvetica-Bold", fontSize=24, spaceAfter=18
+    )
+    Subtitle = ParagraphStyle(
+        "Subtitle", parent=styles["Normal"], alignment=1, fontName="Helvetica", fontSize=14, spaceAfter=24
+    )
+    Author = ParagraphStyle(
+        "Author", parent=styles["Normal"], alignment=1, fontName="Helvetica-Oblique", fontSize=12, spaceAfter=0
+    )
+    H1 = ParagraphStyle(
+        "Heading1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=16, spaceBefore=12, spaceAfter=8
+    )
+    H2 = ParagraphStyle(
+        "Heading2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=13, spaceBefore=8, spaceAfter=6
+    )
+    Body = ParagraphStyle(
+        "BodyText", parent=styles["BodyText"], fontName="Helvetica", fontSize=11, leading=15, spaceAfter=6
+    )
+    TOCHeading = ParagraphStyle(
+        "TOCHeading", parent=styles["Heading1"], alignment=0, fontName="Helvetica-Bold", fontSize=16, spaceAfter=12
+    )
+    toc_level_styles = [
+        ParagraphStyle(name='TOCLevel1', parent=styles['Normal'], fontSize=11, leftIndent=0.0*cm, firstLineIndent=0, spaceBefore=3, leading=14),
+        ParagraphStyle(name='TOCLevel2', parent=styles['Normal'], fontSize=10, leftIndent=0.7*cm, firstLineIndent=0, spaceBefore=1, leading=12),
+    ]
+
+    # Document template con footer
+    def on_page(canvas, doc):
+        canvas.saveState()
+        # numero pagina centrato
+        page_num = str(doc.page)
+        y = 1.2 * cm
+        w = stringWidth(page_num, "Helvetica", 10)
+        canvas.setFont("Helvetica", 10)
+        canvas.drawString((pagesize[0] - w) / 2.0, y, page_num)
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        out_pdf_path,
+        pagesize=pagesize,
+        leftMargin=left_margin,
+        rightMargin=right_margin,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin,
+    )
+
+    story = []
+
+    # Pagina titolo
+    story.append(Spacer(1, 3*cm))
+    story.append(Paragraph(title.strip(), Title))
+    if subtitle.strip():
+        story.append(Paragraph(subtitle.strip(), Subtitle))
+    story.append(Spacer(1, 2*cm))
+    story.append(Paragraph(author.strip(), Author))
+    story.append(PageBreak())
+
+    # Copyright
+    year = datetime.datetime.now().year
+    copyright_p = f"© {year} {author}. Tutti i diritti riservati."
+    story.append(Spacer(1, 8*cm))
+    story.append(Paragraph(copyright_p, ParagraphStyle("Copy", parent=styles["Normal"], alignment=1, fontSize=10)))
+    story.append(PageBreak())
+
+    # TOC
+    story.append(Paragraph("Indice", TOCHeading))
+    toc = TableOfContents()
+    toc.levelStyles = toc_level_styles
+    story.append(toc)
+    story.append(PageBreak())
+
+    # Hook per popolare il TOC dopo i flowables dei contenuti
+    def after_flowable(flowable):
+        if isinstance(flowable, Paragraph):
+            name = flowable.style.name
+            if name == "Heading1":
+                toc.addEntry(0, flowable.getPlainText(), doc.page)
+            elif name == "Heading2":
+                toc.addEntry(1, flowable.getPlainText(), doc.page)
+
+    doc.afterFlowable(after_flowable)
+
+    # Contenuti
+    idx_block = 0
+    for level, heading_text in headings:
+        if level == 1:
+            story.append(Paragraph(heading_text.strip(), H1))
+        else:
+            story.append(Paragraph(heading_text.strip(), H2))
+
+        if idx_block < len(content_blocks):
+            b_level, paragraphs = content_blocks[idx_block]
+            if b_level == level:
+                for t in paragraphs:
+                    if t.strip():
+                        story.append(Paragraph(t.strip(), Body))
+                idx_block += 1
+
+        if level == 1:
+            story.append(PageBreak())
+
+    # Build
+    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+
+
+# =========================
 # Modalità CLI
-# -------------------------------
+# =========================
 def cli_main():
-    ap = argparse.ArgumentParser(description="Genera DOCX/PDF formattato da DOCX/PDF di ingresso")
+    ap = argparse.ArgumentParser(description="Genera DOCX e PDF (senza LibreOffice) da DOCX/PDF sorgente")
     ap.add_argument("--input", required=True, help="File sorgente .docx o .pdf")
     ap.add_argument("--title", required=True, help="Titolo")
     ap.add_argument("--subtitle", default="", help="Sottotitolo")
@@ -289,7 +402,6 @@ def cli_main():
     ap.add_argument("--page", choices=["6x9", "8.5x11"], default="6x9", help="Formato pagina")
     ap.add_argument("--out-docx", default="output_formattato.docx", help="Output DOCX")
     ap.add_argument("--out-pdf", default="output_formattato.pdf", help="Output PDF")
-    ap.add_argument("--no-pdf", action="store_true", help="Non generare il PDF")
     args = ap.parse_args()
 
     src = args.input.lower()
@@ -300,7 +412,8 @@ def cli_main():
     else:
         raise ValueError("Formato input non supportato. Usa .docx o .pdf")
 
-    doc = build_document(
+    # DOCX
+    doc = build_docx(
         title=args.title,
         subtitle=args.subtitle,
         author=args.author,
@@ -311,16 +424,22 @@ def cli_main():
     doc.save(args.out_docx)
     print(f"[OK] DOCX creato: {args.out_docx}")
 
-    if not args.no_pdf:
-        ok = export_pdf(args.out_docx, args.out_pdf)
-        if ok:
-            print(f"[OK] PDF creato: {args.out_pdf}")
-        else:
-            print("Conversione PDF non riuscita. Installa LibreOffice o usa docx2pdf su Windows.")
+    # PDF nativo
+    build_pdf(
+        out_pdf_path=args.out_pdf,
+        title=args.title,
+        subtitle=args.subtitle,
+        author=args.author,
+        page_format=args.page,
+        headings=headings,
+        content_blocks=blocks,
+    )
+    print(f"[OK] PDF creato: {args.out_pdf}")
 
-# -------------------------------
-# Modalità UI Streamlit integrata
-# -------------------------------
+
+# =========================
+# Modalità UI Streamlit
+# =========================
 def ui_main():
     import tempfile
     import streamlit as st
@@ -335,14 +454,12 @@ def ui_main():
         title = st.text_input("Titolo", "")
         subtitle = st.text_input("Sottotitolo", "")
         author = st.text_input("Autore", "")
-        gen_pdf = st.checkbox("Genera anche PDF", value=True)
-
     uploaded = st.file_uploader("Carica un DOCX o un PDF", type=["docx", "pdf"])
     run = st.button("Genera")
 
     if run:
         if not uploaded:
-            st.error("Carica prima un file DOCX o PDF.")
+            st.error("Carica prima un file.")
             st.stop()
         if not title or not author:
             st.error("Compila Titolo e Autore.")
@@ -354,68 +471,69 @@ def ui_main():
             with open(in_path, "wb") as f:
                 f.write(uploaded.getbuffer())
 
-            try:
-                with st.spinner("Analisi del sorgente"):
-                    if in_path.endswith(".docx"):
-                        headings, blocks = parse_docx_input(in_path)
-                    else:
-                        headings, blocks = parse_pdf_input(in_path)
-                with st.spinner("Costruzione DOCX"):
-                    doc = build_document(
-                        title=title,
-                        subtitle=subtitle,
-                        author=author,
-                        page_format=page_format,
-                        headings=headings,
-                        content_blocks=blocks,
-                    )
-                    out_docx = os.path.join(tmpdir, "output_formattato.docx")
-                    doc.save(out_docx)
-                    with open(out_docx, "rb") as f:
-                        docx_bytes = f.read()
-                st.success("DOCX generato")
-                st.download_button(
-                    label="Scarica DOCX",
-                    data=docx_bytes,
-                    file_name=f"{title.strip().replace(' ','_')}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-                if gen_pdf:
-                    with st.spinner("Conversione in PDF"):
-                        out_pdf = os.path.join(tmpdir, "output_formattato.pdf")
-                        ok = export_pdf(out_docx, out_pdf)
-                        if ok and os.path.exists(out_pdf):
-                            with open(out_pdf, "rb") as f:
-                                pdf_bytes = f.read()
-                            st.success("PDF generato")
-                            st.download_button(
-                                label="Scarica PDF",
-                                data=pdf_bytes,
-                                file_name=f"{title.strip().replace(' ','_')}.pdf",
-                                mime="application/pdf",
-                            )
-                        else:
-                            st.warning("PDF non generato automaticamente. Installa LibreOffice in PATH o docx2pdf su Windows.")
-            except Exception as e:
-                st.error(f"Errore: {e}")
+            if in_path.endswith(".docx"):
+                headings, blocks = parse_docx_input(in_path)
+            else:
+                headings, blocks = parse_pdf_input(in_path)
 
-# -------------------------------
+            # DOCX
+            doc = build_docx(
+                title=title,
+                subtitle=subtitle,
+                author=author,
+                page_format=page_format,
+                headings=headings,
+                content_blocks=blocks,
+            )
+            out_docx = os.path.join(tmpdir, "output_formattato.docx")
+            doc.save(out_docx)
+            with open(out_docx, "rb") as f:
+                docx_bytes = f.read()
+
+            st.success("DOCX generato")
+            st.download_button(
+                label="Scarica DOCX",
+                data=docx_bytes,
+                file_name=f"{title.strip().replace(' ','_')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+            # PDF nativo
+            out_pdf = os.path.join(tmpdir, "output_formattato.pdf")
+            build_pdf(
+                out_pdf_path=out_pdf,
+                title=title,
+                subtitle=subtitle,
+                author=author,
+                page_format=page_format,
+                headings=headings,
+                content_blocks=blocks,
+            )
+            with open(out_pdf, "rb") as f:
+                pdf_bytes = f.read()
+            st.success("PDF generato (senza LibreOffice)")
+            st.download_button(
+                label="Scarica PDF",
+                data=pdf_bytes,
+                file_name=f"{title.strip().replace(' ','_')}.pdf",
+                mime="application/pdf",
+            )
+
+
+# =========================
 # Entry point
-# -------------------------------
+# =========================
 if __name__ == "__main__":
-    # Se lo si lancia con streamlit run, sys.argv non contiene i parametri richiesti
-    # Regola: se sono presenti argomenti espliciti per CLI usa CLI, altrimenti prova UI
+    # Se lanciato con parametri usa CLI, altrimenti prova UI
     wants_cli = any(arg.startswith("--") for arg in sys.argv[1:])
     if wants_cli:
         cli_main()
     else:
-        # prova UI se Streamlit è disponibile
         try:
             import streamlit  # noqa
             ui_main()
         except Exception:
-            # fallback CLI con help
             print("Per la UI: streamlit run book_formatter.py")
-            print("Oppure usa la CLI con argomenti. Esempio:")
-            print("python book_formatter.py --input sorgente.docx --title 'Titolo' --author 'Autore' --page 6x9")
+            print("Oppure CLI, es.:")
+            print("python book_formatter.py --input input.docx --title 'Titolo' --author 'Autore' --page 6x9")
             sys.exit(1)
