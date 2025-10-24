@@ -22,7 +22,8 @@ except Exception:
 # ReportLab per PDF nativo
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import cm, inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, PageBreak, Spacer, TableOfContents, Frame, PageTemplate
+from reportlab.platypus import SimpleDocTemplate, Paragraph, PageBreak, Spacer
+from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.platypus.flowables import KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import fonts
